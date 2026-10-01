@@ -218,8 +218,39 @@ async function clearTags(page, log) {
   log(`清掉了预置标签: ${existing.join(' / ')}`);
 }
 
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** 写一个标签，返回是否真的加上去了（以 chip 数增加为准） */
+async function addTag(page, input, tag) {
+  const before = (await readTags(page)).length;
+
+  // 先看 B站 的推荐标签行里有没有现成的。有就点它——这不是偷懒，是必须：
+  // 实测「手游情报」手打后回车**无事发生**（输入框还会被清空），点推荐 chip 才能加上。
+  // 这类多半是活动标签，只认 B站 自己的入口。推荐 chip 本身也比手打更稳（B站 自己认可的）。
+  const rec = page
+    .locator(S.tagRecommendChip, { hasText: new RegExp(`^\\s*${escapeRe(tag)}\\s*$`) })
+    .first();
+  if (await rec.count().catch(() => 0)) {
+    await rec.scrollIntoViewIfNeeded().catch(() => {});
+    await rec.click({ timeout: 5000 }).catch(() => {});
+    await page.waitForTimeout(700);
+    if ((await readTags(page)).length > before) return true;
+  }
+
+  // 推荐行里没有（或点了没用），退回手打
+  await input.click();
+  await input.fill(tag);
+  await page.waitForTimeout(350);
+  await input.press('Enter');
+  await page.waitForTimeout(600);
+  return (await readTags(page)).length > before;
+}
+
 async function fillTags(page, tags, log) {
   await clearTags(page, log);
+  // 清空最后一个 chip 会触发组件重渲染，紧接着写第一个标签的 fill+Enter 会被吞掉
+  // （实测 2026-09-30 那次「手游情报」就是这么丢的）。等一下再开始。
+  await page.waitForTimeout(800);
 
   const hit = await find(page, S.tagInput);
   if (!hit) {
@@ -228,20 +259,23 @@ async function fillTags(page, tags, log) {
   }
 
   for (const t of tags) {
-    const before = (await readTags(page)).length;
-    try {
-      await hit.loc.click();
-      await hit.loc.fill(t.slice(0, S.tagMaxLen));
-      await page.waitForTimeout(300);
-      await hit.loc.press('Enter');
-      await page.waitForTimeout(500);
-    } catch (e) {
-      log(`  ! 标签「${t}」输入异常：${String(e.message).split('\n')[0]}`);
-      continue;
-    }
-    const after = await readTags(page);
-    if (after.length === before) {
-      log(`  ! 标签「${t}」没生效（可能被上限挡住，或联想下拉吞了回车）`);
+    const tag = t.slice(0, S.tagMaxLen);
+    let ok = false;
+    for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+      try {
+        ok = await addTag(page, hit.loc, tag);
+      } catch (e) {
+        log(`  ! 标签「${tag}」输入异常：${String(e.message).split('\n')[0]}`);
+        break;
+      }
+      if (!ok && attempt === 1) log(`  「${tag}」第一次没生效，重试`);
+      if (!ok && attempt === 2) {
+        const leftover = await hit.loc.inputValue().catch(() => '');
+        log(
+          `  ! 「${tag}」两次都没加上${leftover ? `（输入框残留 "${leftover}"）` : ''}` +
+            `，可能是被 10 个上限挡住或该标签不被接受`
+        );
+      }
     }
   }
 

@@ -61,6 +61,12 @@ const S = {
   tagChip: '#tag-container .label-item-v2-container',
   tagChipText: '.label-item-v2-content',
   tagChipClose: 'svg.close',
+  // B站 按当天标题/简介生成的推荐标签行。**必须优先点它而不是手打**：
+  // 有些标签（实测「手游情报」）手打后回车无事发生、输入框还会被清空，
+  // 但点推荐 chip 就能加上——多半是活动标签，只认它自己的入口。
+  // 已被选中的 chip 会多一个 hot-tag-container-selected 类。
+  tagRecommendChip: 'div.hot-tag-item',
+  tagRecommendSelected: 'hot-tag-container-selected',
   tagTotal: 10,
   tagCountHint: '还可以添加', // 旁边的「还可以添加N个标签」提示，用来核对
 

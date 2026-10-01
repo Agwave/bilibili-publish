@@ -15,7 +15,18 @@
     "tid": "游戏",
     "statement": "个人观点，仅供参考",
     "copyright": 1,
-    "tagsFixed": ["游戏投资", "手游", "游戏排行榜", "游戏行业"],
+    "tagsFixed": [
+      "手游情报",
+      "游戏行业",
+      "游戏公司",
+      "游戏投资",
+      "游戏排行榜",
+      "榜单",
+      "腾讯投资",
+      "网易投资",
+      "世纪华通",
+      "三七互娱"
+    ],
     "maxTags": 10,
     "uploadTimeoutMs": 600000,
     "artifactsDir": "artifacts"
