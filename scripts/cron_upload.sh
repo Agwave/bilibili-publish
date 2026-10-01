@@ -6,7 +6,15 @@
 #   2. 等视频 —— 出片可能还没跑完，等一会儿而不是直接失败；
 #   3. 幂等 —— 已投过的日期直接退出，避免重复投稿。
 #
-# 日志默认追加到 logs/cron.log。
+# 环境变量（都只在手动调试时用，cron 里不设）：
+#   DATE=2026-09-30     覆盖自动推导的日期
+#   DRY_RUN=1           只填不投，停在提交前——用来验证脚本自身逻辑而不产生投稿
+#   WAIT_SECS=0         不等出片，没有就立刻失败
+#
+# 例（拿历史日期试跑整条链路，安全）：
+#   DRY_RUN=1 DATE=2026-09-30 ./scripts/cron_upload.sh
+#
+# 输出走 stdout，由 crontab 那条统一重定向进 logs/cron.log。
 
 set -uo pipefail
 
@@ -43,7 +51,12 @@ if [ -z "${GW:-}" ] || [ ! -d "$GW" ]; then
   exit 1
 fi
 
-DATE="$("$NODE" -e "process.stdout.write(require('$ROOT/src/gamewind').latestDate('$GW')||'')" 2>/dev/null)"
+# 日期：默认取 game-wind 最新快照（对齐 make_video.sh 的取法），可用 DATE 覆盖
+if [ -n "${DATE:-}" ]; then
+  run "日期由 DATE 指定：$DATE"
+else
+  DATE="$("$NODE" -e "process.stdout.write(require('$ROOT/src/gamewind').latestDate('$GW')||'')" 2>/dev/null)"
+fi
 if [ -z "${DATE:-}" ]; then
   run "推导不出日期，退出"
   exit 1
@@ -71,15 +84,23 @@ while [ ! -f "$VIDEO" ]; do
 done
 run "视频就绪：$VIDEO ($(du -h "$VIDEO" | cut -f1))"
 
-# 投稿。默认就是真投（--dry-run 只在手动调试时用）。
+# 投稿。默认就是真投；DRY_RUN=1 时只填不投（调试脚本逻辑用，不产生稿件）。
+DRY_ARGS=()
+if [ "${DRY_RUN:-0}" = "1" ]; then
+  DRY_ARGS=(--dry-run)
+  run "DRY_RUN=1：只填不投"
+fi
+
 # 输出直接走 stdout，由 crontab 那条统一重定向进 logs/cron.log（和 game-wind 的做法一致）。
-"$NODE" "$ROOT/cli.js" upload --date "$DATE"
+"$NODE" "$ROOT/cli.js" upload --date "$DATE" "${DRY_ARGS[@]}"
 code=$?
 
-if [ "$code" -eq 0 ]; then
+if [ "$code" -ne 0 ]; then
+  run "$DATE 投稿失败（退出码 $code），详见 $LOG"
+elif [ "${DRY_RUN:-0}" = "1" ]; then
+  run "$DATE DRY_RUN 完成（未提交，不会写投稿记录）"
+else
   bvid="$("$NODE" -e "try{process.stdout.write(require('$GW/data/videos/$DATE.publish.json').bvid||'')}catch(e){}" 2>/dev/null)"
   run "$DATE 投稿成功${bvid:+，bvid=$bvid}"
-else
-  run "$DATE 投稿失败（退出码 $code），详见 $LOG"
 fi
 exit "$code"
