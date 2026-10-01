@@ -45,7 +45,8 @@ if [ -z "${NODE:-}" ]; then
 fi
 run "node: $NODE"
 
-GW="$("$NODE" -e "process.stdout.write(require('$ROOT/config.json').gamewindPath)" 2>/dev/null)"
+# 走 src/config.js 而不是直接读 config.json —— 它会把路径里的 `~` 展开成家目录
+GW="$("$NODE" -e "process.stdout.write(require('$ROOT/src/config').load().gamewindPath)" 2>/dev/null)"
 if [ -z "${GW:-}" ] || [ ! -d "$GW" ]; then
   run "game-wind 路径无效：${GW:-<空>}，退出"
   exit 1

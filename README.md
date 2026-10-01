@@ -95,7 +95,7 @@ game-wind 的 README 是按「B站封面是 16:10」设计的，但 2026-10 实�
 
 ```jsonc
 {
-  "gamewindPath": "~/ai-project/game-wind",
+  "gamewindPath": "~/ai-project/game-wind",   // 支持 ~ 展开；也可用 GAMEWIND_PATH 环境变量覆盖
   "browser": { "cdpPort": 9222, "prefer": "edge" },
   "publish": {
     "tid": "游戏",                    // 分区名（不是数字 id），30 个可选值见 selectors.js 的 TID_OPTIONS

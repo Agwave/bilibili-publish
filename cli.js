@@ -22,13 +22,8 @@ const bad = (m) => console.log(`  \x1b[31m✗\x1b[0m ${m}`);
 const warn = (m) => console.log(`  \x1b[33m!\x1b[0m ${m}`);
 const head = (m) => console.log(`\n\x1b[1m${m}\x1b[0m`);
 
-function loadConfig() {
-  if (!fs.existsSync(CONFIG_PATH)) throw new Error(`找不到配置文件: ${CONFIG_PATH}`);
-  const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  // 环境变量优先，方便临时换仓库
-  if (process.env.GAMEWIND_PATH) cfg.gamewindPath = process.env.GAMEWIND_PATH;
-  return cfg;
-}
+// 配置统一走 src/config.js（它会展开路径里的 `~`，见该文件注释）
+const loadConfig = () => require('./src/config').load(CONFIG_PATH);
 
 function parseArgs(argv) {
   const out = { _: [] };
