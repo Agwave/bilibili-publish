@@ -1,0 +1,11 @@
+# 依赖
+node_modules/
+
+# 运行产物：探针与 dry-run 的截图/HTML 存档。
+# 单次投稿失败时是有用的现场证据，但会一直涨（首次建成时已有 13M），不入库。
+/artifacts/
+/logs/
+
+# 注：投稿记录 publish.json 不在这里 —— 它写在 game-wind 仓库的
+# data/videos/<date>.publish.json（见 config.json 的 gamewindPath）。
+# 登录态也不在这里 —— 存在 Windows 侧的浏览器 profile 目录里。
