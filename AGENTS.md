@@ -141,5 +141,12 @@ node -e "const{chromium}=require('playwright');(async()=>{const b=await chromium
 
 或直接 `node cli.js doctor`（剩 ≤3 天会告警）。
 
+**投稿流程自己也会预检**：`uploader.js` 在拉起浏览器后立刻查一次，剩余天数 ≤
+`config.json` 的 `publish.sessionWarnDays`（默认 2）时，会在日志里打一段醒目的 ⚠️。
+所以正常跑的日子里，`logs/cron.log` 会提前出现提醒，不用你主动去查。
+
+注意这个预检**只覆盖真正走投稿流程的日子**——如果某天因为"已投过"被跳过，
+脚本在到达预检之前就退出了，那天不会有提醒。
+
 过期后定时任务会失败，`logs/cron.log` 里有明确提示（不会静默失败），需要重跑
 `node cli.js login` 扫码。

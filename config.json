@@ -28,6 +28,7 @@
       "三七互娱"
     ],
     "maxTags": 10,
+    "sessionWarnDays": 2,
     "uploadTimeoutMs": 600000,
     "artifactsDir": "artifacts"
   }

@@ -18,6 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 const { ensureBrowser, getPage } = require('./browser');
+const { sessionInfo } = require('./login');
 const { find, findFileInput, describeFileInputs } = require('./dom');
 const S = require('./selectors');
 
@@ -426,6 +427,20 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
   // 3. 浏览器
   const { context, info } = await ensureBrowser(cfg, log);
   log(`浏览器: ${info.Browser}`);
+
+  // 登录态预检。SESSDATA 只有 7 天有效期（见 AGENTS.md），到期当天投稿会直接失败——
+  // 失败本身有明确报错，但那时已经错过当天了。所以临近到期就在这里提前吼一声，
+  // 让你有时间安排扫码。放在这个位置是因为浏览器反正已经拉起来了，不用额外开销。
+  const sess = await sessionInfo(context);
+  const warnDays = (cfg.publish && cfg.publish.sessionWarnDays) || 2;
+  if (sess.loggedIn && sess.daysLeft != null && sess.daysLeft <= warnDays) {
+    log('');
+    log(`⚠️  登录态快过期：SESSDATA 只剩 ${sess.daysLeft} 天` +
+        (sess.expiresAt ? `（${sess.expiresAt.toLocaleString('zh-CN')}）` : ''));
+    log('    过期后定时投稿会失败。尽快跑一次: node cli.js login');
+    log('');
+  }
+
   const page = await getPage(context);
   await openUploadPage(page, log);
 
