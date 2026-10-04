@@ -31,7 +31,7 @@ Playwright 驱动真实浏览器，把「开创作中心 → 拖文件 → 填�
 
 浏览器 profile 必须落在 Windows 能看到的文件系统上（默认 `C:\Users\<你>\bilibili-publish\profile`），
 Windows 进程读不了 ext4 上的 WSL 路径。Chrome/Edge 136+ 禁止在默认 profile 上开远程调试端口，
-所以必须用独立目录——好处是登录态存在里面，扫码一次能用约一个月。
+所以必须用独立目录——好处是登录态存在里面，扫一次码能管 7 天。
 
 ## 用法
 
@@ -239,7 +239,7 @@ iframe 列表、class 前缀统计。对着它改 `selectors.js` 即可。
 | 症状 | 原因与处理 |
 |---|---|
 | `等了 30s 浏览器还没在 9222 端口上监听` | 该 profile 已被另一个浏览器窗口占用。关掉那个窗口，或删掉 profile 目录里的 `SingletonLock` |
-| 被重定向到 passport | 登录态过期（SESSDATA 约一个月），重跑 `node cli.js login` |
+| 被重定向到 passport | 登录态过期（SESSDATA 只有 7 天），重跑 `node cli.js login` |
 | `读不出视频分辨率` / ffmpeg 无输出 | `chmod +x node_modules/ffmpeg-static/ffmpeg`（代码里有自愈，但中断重装后可能仍需要） |
 | 卡在「等表单出现」 | 转码慢，或文件输入框的选择器失效 |
 | 投稿按钮一直不可点 | 还在转码，代码会等最多 5 分钟 |

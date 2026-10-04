@@ -129,5 +129,17 @@ ffmpeg 走 `ffmpeg-static`）。PATH 查找只在交互式终端下成立。
 改这个脚本时注意 cron 环境的三个坑（脚本注释里写了）：PATH 里没有 nvm、
 出片可能还没跑完、以及必须幂等。
 
-**登录态约一个月过期**（实测新登录只有 6 天左右），过期后定时任务会失败，
-需要人工跑一次 `node cli.js login` 扫码。失败时 `logs/cron.log` 里有明确提示。
+**登录态只有 7 天有效期**，所以大约**每周要人工扫一次码**。这是本工具目前最大的运维负担。
+
+过期的判定很精确——B站 把 `SESSDATA` / `bili_jct` / `DedeUserID` 三个 cookie 设成同一个
+到期时刻，且与登录时刻的**时分秒完全相同**（实测 10-01 15:21 登录 → 10-08 15:21 过期）。
+想看还剩多久：
+
+```bash
+node -e "const{chromium}=require('playwright');(async()=>{const b=await chromium.connectOverCDP('http://127.0.0.1:9222');const c=await b.contexts()[0].cookies(['https://www.bilibili.com']);const s=c.find(x=>x.name==='SESSDATA');console.log(new Date(s.expires*1000).toLocaleString('zh-CN'),'剩',((s.expires*1000-Date.now())/86400000).toFixed(2),'天');await b.close()})()"
+```
+
+或直接 `node cli.js doctor`（剩 ≤3 天会告警）。
+
+过期后定时任务会失败，`logs/cron.log` 里有明确提示（不会静默失败），需要重跑
+`node cli.js login` 扫码。

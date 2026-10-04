@@ -3,7 +3,8 @@
  * login.js — 扫码登录与登录态检测
  *
  * 登录态存在 Windows 侧浏览器 profile 目录里（见 browser.js），所以只需要人工扫一次码，
- * 之后每次运行直接复用。SESSDATA 大约一个月过期，过期后重跑 `cli.js login` 即可。
+ * 之后每次运行直接复用。**SESSDATA 有效期是 7 天**（实测：10-01 15:21 登录 → 10-08 15:21
+ * 过期，两者的时分秒完全相同），所以大约每周要重扫一次码。公开资料里说"一个月"是错的。
  */
 
 const { ensureBrowser, getPage } = require('./browser');
