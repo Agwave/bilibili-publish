@@ -13,13 +13,35 @@ node cli.js doctor
 本仓库**没有配 linter，也没有测试框架**。语法检查只能挡住笔误，真正的回归风险在
 **投稿页选择器失效**——那是页面改版导致的，语法检查永远发现不了。所以：
 
-> **改动涉及 `selectors.js` / `uploader.js` / `dom.js` 时，收尾必须再跑一次
+> **改动涉及 `selectors.js` / `uploader.js` / `dom.js` / `browser.js` 时，收尾必须再跑一次
 > `node cli.js upload --date <最近日期> --dry-run`**，看它能不能一路填到「停在提交前」。
 > 这是本仓库唯一的真集成测试，等价于 game-wind 里的 `go test ./...`。
 
 注意 `--dry-run` 会**真的上传一个视频**到创作中心（只是不提交），会留下草稿。
 
-改动只在 `metadata.js` / `cover.js` 这类不碰页面的模块时，跑 doctor + 肉眼核对输出即可。
+### 3. 涉及系统集成时，还要在「cron 环境」里再验一次
+
+**普通终端跑通 ≠ cron 里跑通。** cron 的 PATH 只有 `/usr/bin:/bin`，
+**没有 Windows 互操作路径**——那些是 WSL 给交互式终端加的。2026-10-04 早上的定时投稿
+就是这么挂的：代码在终端里好好的，cron 里报 `spawn powershell.exe ENOENT`。
+
+所以凡是碰了「调外部程序」的改动，用同款环境复验：
+
+```bash
+# 快：只验能不能起浏览器、连 CDP、认登录态
+env -i HOME="$HOME" PATH=/usr/bin:/bin "$(ls -d $HOME/.nvm/versions/node/*/bin/node | sort -V | tail -1)" cli.js doctor
+
+# 全：连脚本逻辑一起验，走完整链路但不投稿
+env -i HOME="$HOME" PATH=/usr/bin:/bin bash -c 'DRY_RUN=1 DATE=<最近日期> ./scripts/cron_upload.sh'
+```
+
+**别只测「已投过跳过」那条分支**——它会在碰到系统调用之前就退出，等于什么都没验
+（这就是上面那个 bug 溜过去的原因）。要让它真正走到打开浏览器那一步。
+
+规则：调用外部程序的**一律写绝对路径**（`powershell.exe` 走 `resolvePowershell()`，
+ffmpeg 走 `ffmpeg-static`）。PATH 查找只在交互式终端下成立。
+
+改动只在 `metadata.js` / `cover.js` 这类不碰页面和系统集成的模块时，跑 doctor + 肉眼核对即可。
 
 ## 2. Git commit message 格式
 

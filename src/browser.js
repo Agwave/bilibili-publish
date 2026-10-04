@@ -34,12 +34,40 @@ function winToLinux(winPath) {
   return '/mnt/' + winPath[0].toLowerCase() + winPath.slice(2).replace(/\\/g, '/');
 }
 
+/**
+ * 找 powershell.exe 的绝对路径。
+ *
+ * **必须用绝对路径**：cron 的 PATH 只有 `/usr/bin:/bin`，里面没有 Windows 互操作路径
+ * （那些是 WSL 给交互式终端加的）。按名字调会在 cron 里报 `spawn powershell.exe ENOENT`。
+ * 实测 2026-10-04 早上的定时投稿就是这么失败的——而且它发生在打开浏览器之前，
+ * 所以日志里连浏览器都还没起来。
+ */
+const PS_CANDIDATES = [
+  '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',
+  '/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0/powershell.exe',
+];
+
+let cachedPowershell = null;
+function resolvePowershell() {
+  if (cachedPowershell) return cachedPowershell;
+  for (const c of PS_CANDIDATES) {
+    if (fs.existsSync(c)) {
+      cachedPowershell = c;
+      return c;
+    }
+  }
+  // 兜底：交给 PATH 解析。交互式终端下能命中，cron 下会 ENOENT——
+  // 但那时上面两个候选应该已经命中了，走不到这里。
+  cachedPowershell = 'powershell.exe';
+  return cachedPowershell;
+}
+
 let cachedUserProfile = null;
 /** 取 Windows 侧 USERPROFILE。缓存，避免每次调用都起一个 PowerShell。 */
 async function getWindowsUserProfile() {
   if (cachedUserProfile) return cachedUserProfile;
   const out = await new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-Command', '$env:USERPROFILE'], (err, stdout) => {
+    execFile(resolvePowershell(), ['-NoProfile', '-Command', '$env:USERPROFILE'], (err, stdout) => {
       if (err) return reject(new Error(`取 Windows USERPROFILE 失败: ${err.message}`));
       resolve(stdout);
     });
@@ -90,7 +118,7 @@ function launchWindowsBrowser(exe, args) {
   const quoted = args.map((a) => `'${String(a).replace(/'/g, "''")}'`).join(',');
   const cmd = `Start-Process -FilePath '${exe.replace(/'/g, "''")}' -ArgumentList ${quoted}`;
   return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-Command', cmd], (err, stdout, stderr) => {
+    execFile(resolvePowershell(), ['-NoProfile', '-Command', cmd], (err, stdout, stderr) => {
       if (err) return reject(new Error(`拉起浏览器失败: ${err.message}\n${stderr || ''}`));
       resolve();
     });
