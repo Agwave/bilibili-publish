@@ -221,6 +221,39 @@ async function clearTags(page, log) {
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/**
+ * 登录态保活。
+ *
+ * B站 的 cookie 续期逻辑**只挂在主站页面**（www.bilibili.com）——实测投稿页
+ * 从头到尾不调 `cookie/info`，所以光跑投稿流程是不会续期的，7 天一到就掉登录。
+ *
+ * 做法是模拟「用户每天开一次 B站」：访问主站，让 B站 自己的 JS 去调
+ * `GET passport.bilibili.com/x/passport-login/web/cookie/info`，它判断该续了
+ * （`refresh: true`）就会由**页面自己的代码**完成续期并把 SESSDATA 换成新的 7 天。
+ *
+ * 为什么不自己调续期接口：那样得先逆清楚 refresh 的参数，而且主动打这类接口
+ * 更容易撞风控。让页面自己走一遍是它设计内的路径，风险最低。
+ */
+async function keepAlive(context, log) {
+  const page = await context.newPage();
+  try {
+    await page.goto('https://www.bilibili.com', { waitUntil: 'domcontentloaded', timeout: 45000 });
+    // 留够时间让站点的登录态模块加载并发起 cookie/info
+    await page.waitForTimeout(6000);
+    if (page.url().includes('passport.bilibili.com')) {
+      log('! 主站把请求重定向到了登录页——登录态已失效');
+      return false;
+    }
+    return true;
+  } catch (e) {
+    // 保活失败不该拖垮投稿，记一笔继续
+    log(`! 保活访问失败（不影响本次投稿）：${String(e.message).split('\n')[0]}`);
+    return false;
+  } finally {
+    await page.close().catch(() => {});
+  }
+}
+
 /** 写一个标签，返回是否真的加上去了（以 chip 数增加为准） */
 async function addTag(page, input, tag) {
   const before = (await readTags(page)).length;
@@ -428,10 +461,29 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
   const { context, info } = await ensureBrowser(cfg, log);
   log(`浏览器: ${info.Browser}`);
 
-  // 登录态预检。SESSDATA 只有 7 天有效期（见 AGENTS.md），到期当天投稿会直接失败——
-  // 失败本身有明确报错，但那时已经错过当天了。所以临近到期就在这里提前吼一声，
-  // 让你有时间安排扫码。放在这个位置是因为浏览器反正已经拉起来了，不用额外开销。
+  // 保活 + 登录态预检。放在这个位置是因为浏览器反正已经拉起来了，顺路做，没有额外开销。
+  //
+  // 先记一次到期时间，跑完保活再记一次——如果 B站 这次真的续了，两次会不同，
+  // 日志里能看到。这也是验证「保活到底有没有用」的唯一手段（见 keepAlive 注释）。
+  const before = await sessionInfo(context);
+  await keepAlive(context, log);
   const sess = await sessionInfo(context);
+
+  if (before.expiresAt && sess.expiresAt && sess.expiresAt > before.expiresAt) {
+    log(`✓ 登录态已自动续期：${before.expiresAt.toLocaleString('zh-CN')} → ${sess.expiresAt.toLocaleString('zh-CN')}`);
+  }
+
+  // 每天一行，既让你在日志里看得见状态，也是「保活到底有没有生效」的观测点：
+  // 到期时间一直不变 = B站 还没到续期窗口；某天突然往后跳 7 天 = 续期成功。
+  log(
+    sess.loggedIn
+      ? `登录态: 已登录，SESSDATA 剩 ${sess.daysLeft} 天` +
+          (sess.expiresAt ? `（${sess.expiresAt.toLocaleString('zh-CN')} 过期）` : '')
+      : '登录态: 未登录'
+  );
+
+  // SESSDATA 只有 7 天有效期（见 AGENTS.md），到期当天投稿会直接失败——那时已经错过当天了。
+  // 所以临近到期就在这里提前吼一声，让你有时间安排扫码。
   const warnDays = (cfg.publish && cfg.publish.sessionWarnDays) || 2;
   if (sess.loggedIn && sess.daysLeft != null && sess.daysLeft <= warnDays) {
     log('');

@@ -145,6 +145,23 @@ node -e "const{chromium}=require('playwright');(async()=>{const b=await chromium
 `config.json` 的 `publish.sessionWarnDays`（默认 2）时，会在日志里打一段醒目的 ⚠️。
 所以正常跑的日子里，`logs/cron.log` 会提前出现提醒，不用你主动去查。
 
+### 自动续期（keepAlive）
+
+**B站 只会续「主站页面」的登录态，投稿页不会。** 实测：投稿页从头到尾不发
+`passport.bilibili.com/x/passport-login/web/cookie/info`，而 www.bilibili.com 一加载就发。
+所以光跑投稿流程永远不会续期。
+
+`uploader.js` 的 `keepAlive()` 因此在每次投稿前先访问一次主站，让**页面自己的 JS** 去调
+`cookie/info`；B站 判断该续了（返回 `refresh: true`）就由它的代码把 SESSDATA 换成新的 7 天。
+
+**不要自己调续期接口**：得先逆清楚 refresh 的参数，而且主动打这类接口更容易撞风控。
+走页面等于模拟「用户每天开一次 B站」，是它设计内的路径。
+
+> **未验证**：实现时 `cookie/info` 一直返回 `refresh: false`（还没到续期窗口），
+> 所以完整续期链路**没有实测过**。观测点就是日志里那行 `登录态: ...`——
+> 到期时间一直是 10-08 说明没续上，往后跳 7 天说明成了。若最终没成，
+> 退回到每周人工扫码。
+
 注意这个预检**只覆盖真正走投稿流程的日子**——如果某天因为"已投过"被跳过，
 脚本在到达预检之前就退出了，那天不会有提醒。
 
