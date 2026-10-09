@@ -2,11 +2,15 @@
 
 ## 1. 每次改完代码，必须依次完成以下检查（禁止跳过）
 
-```bash
-# 1. 语法检查（全量，新增文件别忘了加进来）
-for f in cli.js src/*.js; do node --check "$f" || exit 1; done
+**1. 语法检查**（全量，新增文件别忘了加进来）
 
-# 2. 自检：素材、ffmpeg、浏览器桥接、登录态
+```bash
+for f in cli.js src/*.js; do node --check "$f" || exit 1; done
+```
+
+**2. 自检**（素材、ffmpeg、浏览器桥接、登录态、告警链路）
+
+```bash
 node cli.js doctor
 ```
 
@@ -50,7 +54,8 @@ env -i HOME="$HOME" PATH=/usr/bin:/bin bash -c 'DRY_RUN=1 DATE=2026-09-30 ./scri
 规则：调用外部程序的**一律写绝对路径**（`powershell.exe` 走 `resolvePowershell()`，
 ffmpeg 走 `ffmpeg-static`）。PATH 查找只在交互式终端下成立。
 
-改动只在 `metadata.js` / `cover.js` 这类不碰页面和系统集成的模块时，跑 doctor + 肉眼核对即可。
+> **例外**：改动只在 `metadata.js` / `cover.js` 这类不碰页面和系统集成的模块时，
+> 跑 doctor + 肉眼核对输出即可——不必做第 3、4 项。
 
 ## 2. Git commit message 格式
 
