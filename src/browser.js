@@ -183,7 +183,14 @@ async function ensureBrowser(config, log = () => {}) {
   return { browser, context, info, launched };
 }
 
-/** 取一个可复用的 page：优先复用已有的 about:blank，否则新开 */
+/**
+ * 取一个可复用的 page：优先复用已有的 about:blank，否则新开。
+ *
+ * **用完要还回来**——走 uploader.js 的 `releasePage()` 归位成 about:blank，别 `page.close()`。
+ * 只认 `about:blank` 是这里唯一的复用条件，归位正好满足它；而关页在它恰好是最后一张时
+ * 会把浏览器一起关掉（实测 2026-10-09）。漏掉收尾的后果（页越攒越多，排查时抓到几天前的
+ * 状态）见 AGENTS.md 第 5 节。
+ */
 async function getPage(context) {
   const pages = context.pages();
   const blank = pages.find((p) => p.url() === 'about:blank');

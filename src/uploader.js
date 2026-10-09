@@ -248,11 +248,12 @@ const PASSPORT_API = {
  * 登录态保活。
  *
  * B站 的 cookie 续期逻辑**只挂在主站页面**（www.bilibili.com）——实测投稿页
- * 从头到尾不调 `cookie/info`，所以光跑投稿流程是不会续期的，7 天一到就掉登录。
+ * 从头到尾不调 `cookie/info`，所以光跑投稿流程是不会续期的，登录一到期就掉。
  *
  * 做法是模拟「用户每天开一次 B站」：访问主站，让 B站 自己的 JS 去调
  * `GET passport.bilibili.com/x/passport-login/web/cookie/info`，它判断该续了
- * （`refresh: true`）就会由**页面自己的代码**完成续期并把 SESSDATA 换成新的 7 天。
+ * （`refresh: true`）就会由**页面自己的代码**完成续期、换发一份新的 SESSDATA
+ * （新期限多长由 B站 定，不一定是 7 天——实测两次扫码分别拿到 7 天和 180 天）。
  *
  * 为什么不自己调续期接口：那样得先逆清楚 refresh 的参数，而且主动打这类接口
  * 更容易撞风控。让页面自己走一遍是它设计内的路径，风险最低。
@@ -269,7 +270,7 @@ const PASSPORT_API = {
  *
  * 现在改成等响应本身：挂监听 → 等 cookie/info → 若 refresh 为 true 再等
  * cookie/refresh 与 confirm/refresh，全都有日志。这样「没触发」「没到窗口」
- * 「链路断了」在日志里是三种不同的行，而不是一律静默。
+ * 「拿到了但读不出来」「链路断了」在日志里是四种不同的行，而不是一律静默。
  *
  * 返回 { ok, refresh }。注意它仍然只负责**跑**保活，续期到底成没成由调用方
  * 比对 SESSDATA 到期时间判定——那才是唯一的地面真值。
@@ -302,8 +303,15 @@ async function keepAlive(context, log) {
     } catch {
       // 响应体读不到就按「未知」处理，别把保活整体判成失败
     }
-    if (!data || data.refresh !== true) {
-      log(`保活: cookie/info refresh=${data ? data.refresh : '未知'}（还没到续期窗口）`);
+    // 「读不出来」和「refresh=false」必须分成两句。原先两者共用一句
+    // 「还没到续期窗口」——响应体读不到时那是在**把猜测当事实**，
+    // 而这恰恰是本模块最初栽的那个坑（失效了却报成正常）。
+    if (!data) {
+      log('! 保活：cookie/info 的响应体读不出来，本次续期状态未知（≠ 还没到窗口）');
+      return { ok: true, refresh: null };
+    }
+    if (data.refresh !== true) {
+      log(`保活: cookie/info refresh=${data.refresh}（还没到续期窗口）`);
       return { ok: true, refresh: false };
     }
 
@@ -327,6 +335,9 @@ async function keepAlive(context, log) {
     log(`! 保活访问失败（不影响本次投稿）：${String(e.message).split('\n')[0]}`);
     return { ok: false, refresh: null };
   } finally {
+    // 这张页是 keepAlive 自己开的私有页（不是 getPage() 发的那张），直接关掉即可：
+    // 每次调用都新建、用完即弃，不存在复用问题，也不会攒下来。
+    // 调用方那类「跑完整条流程的页」才需要 releasePage() 归位——别把两者搞混。
     await page.close().catch(() => {});
   }
 }
@@ -448,6 +459,31 @@ async function ensureNoMask(page, log, what, timeoutMs = 10000) {
       );
     }
     await page.waitForTimeout(400);
+  }
+}
+
+/**
+ * 用完的标签页**归位**成 about:blank，而不是关掉。
+ *
+ * 为什么不关：关页有个看不出来的副作用——**它是最后一张时浏览器会跟着退出**
+ * （实测 2026-10-09：清完历史标签后跑一次 dry-run，Edge 进程直接归零、9222 端口
+ * 只剩 502，下次运行得重新拉起，弹窗 + 慢几秒）。归位两头都要：
+ * 页不会堆——`getPage()` 只认领 `about:blank`，下次运行直接复用这张；
+ * 浏览器也常驻，`ensureBrowser()` 的「复用已在运行的实例」快路径得以成立。
+ *
+ * 为什么非得收尾：不收的话每次运行都多一张**回收不掉**的页（`getPage()` 认不出停着
+ * 投稿页的它）。实测 2026-10-09 曾堆到 10 张，全是历次运行留下的。
+ * 这不只是占资源——排查时随手抓一张会读到**几天前的状态**，那次
+ * 「页面显示稿件投递成功、接口却查不到」的误判就是这么来的。
+ *
+ * 失败路径**不归位**（见 catch）：那时留着现场比干净更有用。
+ */
+async function releasePage(page) {
+  try {
+    await page.goto('about:blank', { timeout: 15000 });
+  } catch {
+    // 归位失败（页面崩了 / 连接断了）就退化成关页，别留一张认不出来的页
+    await page.close().catch(() => {});
   }
 }
 
@@ -625,7 +661,8 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
   }
 
   // 每天一行，既让你在日志里看得见状态，也是「保活到底有没有生效」的观测点：
-  // 到期时间一直不变 = B站 还没到续期窗口；某天突然往后跳 7 天 = 续期成功。
+  // 到期时间一直不变 = B站 还没到续期窗口；某天突然往后跳 = 续期成功
+  // （跳多少天由 B站 定，别按 7 天去认——实测两次扫码分别拿到 7 天和 180 天）。
   log(
     sess.loggedIn
       ? `登录态: 已登录，SESSDATA 剩 ${sess.daysLeft} 天` +
@@ -676,6 +713,7 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
       log('--dry-run：已填完全部字段，停在提交前。');
       log(`  截图: ${path.relative(process.cwd(), path.join(dir, 'dry-run-filled.png'))}`);
       log('  去掉 --dry-run 即真正投稿。');
+      await releasePage(page);
       return { submitted: false, dir };
     }
 
@@ -697,13 +735,7 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
     log(`投稿完成${bvid ? `，bvid=${bvid}` : '（没抓到 bvid，去创作中心确认一下）'}`);
     log(`记录已写入: ${path.relative(cfg.gamewindPath, recPath)}`);
 
-    // 成功就顺手关掉本次的标签页。getPage() 只认领 about:blank，而我们这张已经停在
-    // 投稿页上了，不关的话下次运行会再开一张——实测 2026-10-09 浏览器里堆了 10 个标签，
-    // 全是历次运行留下的。
-    // 这不只是占资源：排查时随手抓一个标签页会读到**几天前的状态**，
-    // 那次「页面显示稿件投递成功、接口却查不到」的误判就是这么来的。
-    // 失败路径不关（见 catch），留着现场。
-    await page.close().catch(() => {});
+    await releasePage(page);
     return { submitted: true, bvid, dir };
   } catch (e) {
     const saved = await capture(page, dir, 'error');
