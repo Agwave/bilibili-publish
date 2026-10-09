@@ -10,8 +10,9 @@
  * 所以这里只干一件事：把「登录态快过期 / 投稿失败」推到企业微信。
  * 告警是兜底，**永远不抛异常**——兜底本身失败不能把投稿流程带塌。
  *
- * webhook 不在这里配：复用 game-wind 那份（config.local.yaml 覆盖 config.yaml），
- * 免得同一个企业微信密钥在两个仓库各存一份、轮换时漏改一处。
+ * webhook 由**本仓库自己持有**：`config.local.json` 的 `notify.webhookUrl`
+ * （入库的 config.json 里留空模板，见 src/config.js 的加载顺序）。
+ * **它是可选的**——没配就是不推送，投稿流程照常跑，不报错。
  */
 
 const fs = require('fs');
@@ -23,33 +24,21 @@ const STATE_DIR = path.join(__dirname, '..', 'logs');
 const STATE_FILE = path.join(STATE_DIR, 'notify-state.json');
 
 /**
- * 从 game-wind 的配置文件里取 webhook。
+ * 解析 webhook，优先级：环境变量 → 本地配置。
  *
- * 用逐行正则而不引 YAML 库：这里只要一个标量，而本仓库的依赖只有 playwright。
- * 代价是只认 `webhook_url:` 这一种写法——game-wind 的配置模板和本地覆盖都是这么写的，
- * 那边改格式的话这里要跟着改（game-wind 自己用的是 gopkg.in/yaml.v3，解析器不通用）。
- *
- * 两个文件都读、后者覆盖前者，与 game-wind internal/config 的加载顺序保持一致。
+ * **这里原先是从 game-wind 的 config.local.yaml 里逐行正则刮出来的**，2026-10-09 拆掉。
+ * 三个理由：① 那是拿别人的私钥凑自己的功能，还把自己的告警去哪儿的决定权交给了
+ * 对方仓库的配置；② 产物文件（mp4/json）格式固定，而 YAML 写法千变万化，
+ * 刮不到就静默跳过告警——**兜底自己断了却不出声**，正是这个模块存在的意义所要治的毛病；
+ * ③ 想让「投稿失败」进另一个群时，旧写法得先去 game-wind 加字段。
+ * 现在 doctor 的第 5 段会如实报出告警状态（推到哪个机器人 / 没配 / 已关掉）。
+ * 注意**「没配」是合法状态**——推送是可选的，没配就是不推，自检只如实报，不当问题。
  */
-const WEBHOOK_RE = /^\s*webhook_url:\s*(?:"([^"]*)"|'([^']*)'|(.*\S))\s*$/;
-
-function loadWebhook(gamewindPath) {
-  if (process.env.GAMEWIND_WEBHOOK) return process.env.GAMEWIND_WEBHOOK.trim();
-  if (!gamewindPath) return '';
-  let url = '';
-  for (const name of ['config.yaml', 'config.local.yaml']) {
-    let text;
-    try {
-      text = fs.readFileSync(path.join(gamewindPath, name), 'utf8');
-    } catch {
-      continue; // 本地覆盖文件不存在是正常情况
-    }
-    for (const line of text.split('\n')) {
-      const m = WEBHOOK_RE.exec(line);
-      if (m) url = (m[1] || m[2] || m[3] || '').trim();
-    }
-  }
-  return url;
+function resolveWebhook(cfg) {
+  const fromEnv = (process.env.NOTIFY_WEBHOOK || '').trim();
+  if (fromEnv) return fromEnv;
+  const fromCfg = cfg && cfg.notify && cfg.notify.webhookUrl;
+  return typeof fromCfg === 'string' ? fromCfg.trim() : '';
 }
 
 /** 本地日期 YYYY-MM-DD。不用 toISOString：那是 UTC，晚上手动跑会串到第二天。 */
@@ -96,9 +85,11 @@ async function push(cfg, kind, content, log = () => {}) {
   try {
     if (cfg && cfg.notify && cfg.notify.enabled === false) return false;
 
-    const webhook = loadWebhook(cfg && cfg.gamewindPath);
+    const webhook = resolveWebhook(cfg);
     if (!webhook) {
-      log('! 没找到企业微信 webhook（game-wind config.local.yaml 的 notify.webhook_url），跳过告警');
+      // 推送是可选的：没配就是不推。这不是错误，日志里也不该扮成错误——
+      // 加了 "!" 号会让人以为出了事，而其实只是没启用。
+      log('未配企业微信 webhook（可选），跳过告警');
       return false;
     }
 
@@ -121,4 +112,4 @@ async function push(cfg, kind, content, log = () => {}) {
   }
 }
 
-module.exports = { push, loadWebhook };
+module.exports = { push, resolveWebhook };

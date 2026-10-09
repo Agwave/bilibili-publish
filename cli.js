@@ -101,6 +101,30 @@ async function cmdDoctor(cfg) {
     problems++;
   }
 
+  // 单独一段，因为「兜底自己断了」此前是完全没有发现手段的：不在任何自检里，
+  // 只有等真出事（投稿失败要告警）时才发现告警也发不出去。查的就是那句
+  // 「跳过告警」的日志——没人翻日志，所以得让自检替人翻。
+  //
+  // 但**没配 webhook 不是问题**：推送是可选的，没配就是不推，自检只如实报状态。
+  // 这里刻意不加 problems——退出码要留给真正让稿件投不出去的东西。
+  head('5. 告警链路 (企业微信)');
+  {
+    const { resolveWebhook } = require('./src/notify');
+    const off = cfg.notify && cfg.notify.enabled === false;
+    const url = off ? '' : resolveWebhook(cfg);
+    if (off) {
+      warn('已在 config.json 里关掉（notify.enabled=false），投稿失败/登录态快过期都不推');
+    } else if (!url) {
+      warn('未配置 webhook（可选）：投稿失败 / 登录态快过期都只写日志，不会推送');
+    } else if (/^https:\/\/qyapi\.weixin\.qq\.com\/cgi-bin\/webhook\/send\?key=\S+$/.test(url)) {
+      ok(`webhook: …${url.slice(-4)}（企业微信机器人）`);
+    } else {
+      // 配了但不像企业微信的地址：可能走了代理或别的转发，也可能字写错了。
+      // 这条比「没配」更值得警惕——本意是要推送的，却大概率推不出去。
+      warn(`webhook 不像企业微信机器人地址（尾 …${url.slice(-4)}），推送大概率会失败`);
+    }
+  }
+
   head(problems === 0 ? '自检通过' : `自检发现 ${problems} 个问题`);
   return problems === 0 ? 0 : 1;
 }

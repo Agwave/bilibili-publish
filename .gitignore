@@ -6,6 +6,10 @@ node_modules/
 /artifacts/
 /logs/
 
+# 本地覆盖配置：入库的 config.json 里 notify.webhookUrl 留空模板，
+# 真值（企业微信机器人密钥）写这里。照 game-wind 的 config.local.yaml 套路。
+/config.local.json
+
 # 注：投稿记录 publish.json 不在这里 —— 它写在 game-wind 仓库的
 # data/videos/<date>.publish.json（见 config.json 的 gamewindPath）。
 # 登录态也不在这里 —— 存在 Windows 侧的浏览器 profile 目录里。
