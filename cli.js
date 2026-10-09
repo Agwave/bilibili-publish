@@ -121,6 +121,33 @@ async function cmdProbe(cfg, args) {
   return 0;
 }
 
+/**
+ * 投稿失败时推一条企业微信。
+ *
+ * 这是 2026-10-09 丢稿的直接补丁：原来失败只写 logs/cron.log，而 cron 是无人值守的，
+ * 「写了日志」和「通知到人」完全是两回事。
+ *
+ * 登录失效单独归一类：它的处理动作（扫码）和别的失败截然不同，混进通用的
+ * 「投稿失败」里很容易被当成偶发故障划过去。
+ */
+async function notifyFailure(cfg, date, e) {
+  const { push } = require('./src/notify');
+  const msg = String((e && e.message) || e);
+  const sessionGone = /未登录|passport/i.test(msg);
+  const content = sessionGone
+    ? `### ❌ B站 投稿失败：登录态失效\n` +
+      `>日期：${date}\n` +
+      `>**SESSDATA 已过期，需要扫码重登**\n` +
+      `>处理：\n` +
+      '```\ncd ~/ai-project/bilibili-publish\nnode cli.js login\n' +
+      `node cli.js upload --date ${date}\n\`\`\``
+    : `### ❌ B站 投稿失败\n` +
+      `>日期：${date}\n` +
+      `>原因：${msg}\n` +
+      `>现场：\`artifacts/\` 下有截图和 HTML`;
+  await push(cfg, sessionGone ? 'session-lost' : 'upload-failed', content, (m) => console.log(m));
+}
+
 async function cmdUpload(cfg, args) {
   const { upload } = require('./src/uploader');
   const gwmod = require('./src/gamewind');
@@ -128,7 +155,12 @@ async function cmdUpload(cfg, args) {
   if (!date) throw new Error('推导不出日期，请显式指定 --date YYYY-MM-DD');
   // 默认就是真投稿（无人值守用）；--dry-run 是开发调试开关，填完停在提交前
   const dryRun = !!args['dry-run'];
-  await upload(cfg, { date, dryRun, log: console.log });
+  try {
+    await upload(cfg, { date, dryRun, log: console.log });
+  } catch (e) {
+    await notifyFailure(cfg, date, e);
+    throw e; // 退出码还得是失败，cron_upload.sh 靠它记日志
+  }
   return 0;
 }
 

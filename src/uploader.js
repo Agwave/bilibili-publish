@@ -10,9 +10,11 @@
  *   2. 不传 --submit 就停在提交前（默认安全），调试选择器时不会误发；
  *   3. 已投过的日期直接拒绝，避免重复投稿。
  *
- * 页面行为上的两个坑（实测）：
+ * 页面行为上的三个坑（实测）：
  *   - 标题会被自动预填成文件名（"2026-10-01"），不清空就会和真标题拼在一起；
- *   - 「创作声明」是必填下拉，漏了它投稿按钮点不动。
+ *   - 「创作声明」是必填下拉，漏了它投稿按钮点不动；
+ *   - 封面编辑器点「完成」会弹「16:9 封面未修改」同步确认框，不答它编辑器就不关，
+ *     残留的遮罩把「立即投稿」挡死（2026-10-09 的失败原因）。见 setCover。
  */
 
 const fs = require('fs');
@@ -21,6 +23,7 @@ const { ensureBrowser, getPage } = require('./browser');
 const { sessionInfo } = require('./login');
 const { find, findFileInput, describeFileInputs } = require('./dom');
 const S = require('./selectors');
+const notify = require('./notify');
 
 // ---------------------------------------------------------------- 小工具
 
@@ -221,6 +224,26 @@ async function clearTags(page, log) {
 
 const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+/** 轮询等条件成立，超时返回 false。用来等页面的续期请求出现。 */
+async function pollUntil(fn, timeoutMs, stepMs = 250) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (fn()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, stepMs));
+  }
+}
+
+// 续期是一条四步链，三个接口都要看着：
+//   cookie/info   页面自己问「该续了吗」，返回 refresh 布尔值
+//   取 refresh_csrf、调 cookie/refresh  换发新的 SESSDATA
+//   confirm/refresh  落库，没走完新 cookie 可能不算数
+const PASSPORT_API = {
+  info: /passport\.bilibili\.com\/x\/passport-login\/web\/cookie\/info/,
+  refresh: /passport\.bilibili\.com\/x\/passport-login\/web\/cookie\/refresh/,
+  confirm: /passport\.bilibili\.com\/x\/passport-login\/web\/confirm\/refresh/,
+};
+
 /**
  * 登录态保活。
  *
@@ -233,22 +256,76 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  *
  * 为什么不自己调续期接口：那样得先逆清楚 refresh 的参数，而且主动打这类接口
  * 更容易撞风控。让页面自己走一遍是它设计内的路径，风险最低。
+ *
+ * **2026-10-09 重写**：上一版是「goto 主站 → 死等 6 秒 → 关页」的盲操作，
+ * 全程不监听任何请求、也不看 cookie/info 返回了什么，所以它**已经失效了也不出声**。
+ * 从 10-05 到 10-08 连跑 4 天，SESSDATA 到期时间一直是 2026/10/8 15:21:26，
+ * 一次都没往后跳——续期从没成功过，而日志里连一行都没有。两个具体毛病：
+ *
+ *   1. 6 秒是拍脑袋的。`domcontentloaded` 时页面还在加载 JS，续期链是异步四步，
+ *      6 秒后 `page.close()` 完全可能把请求掐在半路；
+ *   2. 唯一的失败检测是「URL 变成 passport.bilibili.com」——**这条永远不会命中**，
+ *      主站匿名也能正常打开（实测无 cookie 访问返回 200、不跳登录页）。
+ *
+ * 现在改成等响应本身：挂监听 → 等 cookie/info → 若 refresh 为 true 再等
+ * cookie/refresh 与 confirm/refresh，全都有日志。这样「没触发」「没到窗口」
+ * 「链路断了」在日志里是三种不同的行，而不是一律静默。
+ *
+ * 返回 { ok, refresh }。注意它仍然只负责**跑**保活，续期到底成没成由调用方
+ * 比对 SESSDATA 到期时间判定——那才是唯一的地面真值。
  */
 async function keepAlive(context, log) {
   const page = await context.newPage();
-  try {
-    await page.goto('https://www.bilibili.com', { waitUntil: 'domcontentloaded', timeout: 45000 });
-    // 留够时间让站点的登录态模块加载并发起 cookie/info
-    await page.waitForTimeout(6000);
-    if (page.url().includes('passport.bilibili.com')) {
-      log('! 主站把请求重定向到了登录页——登录态已失效');
-      return false;
+  const seen = { info: null, refresh: null, confirm: null };
+  // 监听必须在 goto 之前挂上：cookie/info 是页面一加载就发的，goto 返回之后再挂会漏掉它，
+  // 而「这个请求到底发没发出来」正是判断保活有没有生效的关键。
+  page.on('response', (res) => {
+    const u = res.url();
+    for (const k of Object.keys(PASSPORT_API)) {
+      if (!seen[k] && PASSPORT_API[k].test(u)) seen[k] = res;
     }
-    return true;
+  });
+
+  try {
+    // 后台标签页里站点的登录态模块可能压根不跑，显式提到前台
+    await page.bringToFront().catch(() => {});
+    await page.goto('https://www.bilibili.com', { waitUntil: 'domcontentloaded', timeout: 45000 });
+
+    if (!(await pollUntil(() => seen.info, 30000))) {
+      log('! 保活：30s 内没等到主站发 cookie/info —— 这次没有触发续期检查（登录态大概率已失效）');
+      return { ok: false, refresh: null };
+    }
+
+    let data = null;
+    try {
+      data = (await seen.info.json()).data;
+    } catch {
+      // 响应体读不到就按「未知」处理，别把保活整体判成失败
+    }
+    if (!data || data.refresh !== true) {
+      log(`保活: cookie/info refresh=${data ? data.refresh : '未知'}（还没到续期窗口）`);
+      return { ok: true, refresh: false };
+    }
+
+    log('保活: cookie/info refresh=true，等页面完成续期……');
+    if (!(await pollUntil(() => seen.refresh, 30000))) {
+      log('! 保活：refresh=true 但 30s 内没看到 cookie/refresh —— 续期链没跑起来');
+      return { ok: false, refresh: true };
+    }
+    log(`保活: cookie/refresh HTTP ${seen.refresh.status()}`);
+
+    // 等不到 confirm 不判硬失败：真正算不算数看调用方比对的到期时间，
+    // 这里记一笔只为出问题时能区分「链路没跑」和「跑了但没落库」。
+    if (await pollUntil(() => seen.confirm, 15000)) {
+      log(`保活: confirm/refresh HTTP ${seen.confirm.status()}`);
+    } else {
+      log('! 保活：没等到 confirm/refresh，续期可能没落库');
+    }
+    return { ok: true, refresh: true };
   } catch (e) {
     // 保活失败不该拖垮投稿，记一笔继续
     log(`! 保活访问失败（不影响本次投稿）：${String(e.message).split('\n')[0]}`);
-    return false;
+    return { ok: false, refresh: null };
   } finally {
     await page.close().catch(() => {});
   }
@@ -325,6 +402,55 @@ async function fillTags(page, tags, log) {
   }
 }
 
+/** 页面上还有几个可见的弹窗遮罩。0 = 没有东西挡着，可以放心点。 */
+async function visibleMaskCount(page) {
+  return await page
+    .locator(S.mask)
+    .evaluateAll((els) =>
+      els.filter((e) => {
+        const r = e.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && getComputedStyle(e).display !== 'none';
+      }).length
+    )
+    .catch(() => 0);
+}
+
+/** 某个选择器当前有没有可见元素。用来判断弹窗开没开，而不是「在不在 DOM 里」。 */
+async function isVisible(page, selector) {
+  const loc = page.locator(selector).first();
+  if ((await loc.count()) === 0) return false;
+  return await loc.isVisible().catch(() => false);
+}
+
+/**
+ * 保证页面上没有弹窗遮罩挡着，挡着就等它消失；等不到就报错。
+ *
+ * 这个检查值得单独存在：遮罩的失败方式特别难查——它不动 DOM、不报错，
+ * 只是让后面每一次点击都变成 "intercepts pointer events" 然后超时 30 秒。
+ * 报错信息指向的是**被点不到的那个按钮**，真正的原因在几十行之外。
+ * 2026-10-09 的封面同步框就是这么卡死投稿的，所以宁可在源头吼一声。
+ */
+async function ensureNoMask(page, log, what, timeoutMs = 10000) {
+  // 通知权限引导框是已知的无害遮罩，来了就顺手关掉
+  if (await isVisible(page, S.notifyDialog)) {
+    log('关掉浏览器通知引导框');
+    await page.locator(S.notifyDialogDismiss).first().click().catch(() => {});
+    await page.waitForTimeout(800);
+  }
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const n = await visibleMaskCount(page);
+    if (n === 0) return true;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `${what}前还有 ${n} 个弹窗遮罩没关掉，继续下去只会点不动按钮。` +
+          `已知来源是封面编辑器的「16:9 同步确认」框——见 selectors.js 的 coverSyncModal 注释。`
+      );
+    }
+    await page.waitForTimeout(400);
+  }
+}
+
 async function setCover(page, coverPath, log) {
   const trigger = await find(page, S.coverTrigger, 8000);
   if (!trigger) {
@@ -352,6 +478,27 @@ async function setCover(page, coverPath, log) {
   }
   await done.loc.click();
   await page.waitForTimeout(2500);
+
+  // 关掉封面编辑器要两步，实测（2026-10-09）中间态有三种：
+  //   只开着同步框 / 只开着编辑器 / 两个都开着。
+  // 所以不能「答完同步框就当完事」——答完编辑器还在，遮罩照样挡死后面的点击。
+  // 这里循环到编辑器真的没了为止：有同步框先答它，没有就再点「完成」。
+  for (let i = 0; i < 4 && (await isVisible(page, S.coverEditor)); i++) {
+    if (await isVisible(page, S.coverSyncModal)) {
+      log('封面编辑器弹出「16:9 封面未修改」同步确认框，选「确认同步」');
+      await page.locator(S.coverSyncConfirm).first().click().catch(() => {});
+    } else {
+      const again = await find(page, S.coverDone, 4000);
+      if (!again) break; // 既没有同步框也没有「完成」——下面 ensureNoMask 会报实情
+      log('同步确认已答，再点一次「完成」关掉封面编辑器');
+      await again.loc.click().catch(() => {});
+    }
+    await page.waitForTimeout(2500);
+  }
+
+  // 这里必须核对遮罩真的没了才敢报成功。老版本直接打了「封面已设置」就往下走，
+  // 结果投稿被残留的遮罩挡死，日志却显示一切正常——和标签那次谎报成功是同一类毛病。
+  await ensureNoMask(page, log, '确认封面');
   log(`封面已设置: ${path.basename(coverPath)}`);
   return true;
 }
@@ -409,6 +556,10 @@ async function submitAndCapture(page, title, log) {
     if (i % 4 === 0) log('  投稿按钮还不可点（多半还有必填项没填完），等……');
     await page.waitForTimeout(3000);
   }
+
+  // 最后一道防线：有遮罩残留的话，下面的 click 会以 "intercepts pointer events"
+  // 超时 30 秒，报错还指向「立即投稿」这个无辜的按钮。宁可在这里说清楚。
+  await ensureNoMask(page, log, '点击「立即投稿」');
 
   log('点击「立即投稿」……');
   await submit.loc.click();
@@ -484,13 +635,26 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
 
   // SESSDATA 只有 7 天有效期（见 AGENTS.md），到期当天投稿会直接失败——那时已经错过当天了。
   // 所以临近到期就在这里提前吼一声，让你有时间安排扫码。
+  //
+  // 除了写日志还推企业微信：10-08 那天这行字**确实打进了 cron.log**，但没人翻日志，
+  // 于是 10-09 照样丢了稿。只写日志的告警在无人值守场景下等于没有。
   const warnDays = (cfg.publish && cfg.publish.sessionWarnDays) || 2;
   if (sess.loggedIn && sess.daysLeft != null && sess.daysLeft <= warnDays) {
+    const expires = sess.expiresAt ? sess.expiresAt.toLocaleString('zh-CN') : '未知';
     log('');
-    log(`⚠️  登录态快过期：SESSDATA 只剩 ${sess.daysLeft} 天` +
-        (sess.expiresAt ? `（${sess.expiresAt.toLocaleString('zh-CN')}）` : ''));
+    log(`⚠️  登录态快过期：SESSDATA 只剩 ${sess.daysLeft} 天（${expires}）`);
     log('    过期后定时投稿会失败。尽快跑一次: node cli.js login');
     log('');
+    await notify.push(
+      cfg,
+      'session-expiring',
+      `### ⚠️ B站 登录态快过期\n` +
+        `>SESSDATA 只剩 **${sess.daysLeft} 天**（${expires} 过期）\n` +
+        `>过期后定时投稿会失败，当天视频需要手动补投。\n` +
+        `>处理：\n` +
+        '```\ncd ~/ai-project/bilibili-publish\nnode cli.js login\n```',
+      log
+    );
   }
 
   const page = await getPage(context);
@@ -532,6 +696,14 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
     const recPath = gwmod.writePublishRecord(cfg.gamewindPath, date, record);
     log(`投稿完成${bvid ? `，bvid=${bvid}` : '（没抓到 bvid，去创作中心确认一下）'}`);
     log(`记录已写入: ${path.relative(cfg.gamewindPath, recPath)}`);
+
+    // 成功就顺手关掉本次的标签页。getPage() 只认领 about:blank，而我们这张已经停在
+    // 投稿页上了，不关的话下次运行会再开一张——实测 2026-10-09 浏览器里堆了 10 个标签，
+    // 全是历次运行留下的。
+    // 这不只是占资源：排查时随手抓一个标签页会读到**几天前的状态**，
+    // 那次「页面显示稿件投递成功、接口却查不到」的误判就是这么来的。
+    // 失败路径不关（见 catch），留着现场。
+    await page.close().catch(() => {});
     return { submitted: true, bvid, dir };
   } catch (e) {
     const saved = await capture(page, dir, 'error');
@@ -542,4 +714,6 @@ async function upload(cfg, { date, dryRun, log = console.log }) {
   }
 }
 
-module.exports = { upload };
+// keepAlive 单独导出：它不含任何投稿副作用，可以脱离投稿流程单独跑，
+// 用来观察「主站到底有没有发 cookie/info、有没有续期」。排查登录态时很省事。
+module.exports = { upload, keepAlive };

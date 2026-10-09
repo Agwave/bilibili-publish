@@ -31,5 +31,9 @@
     "sessionWarnDays": 2,
     "uploadTimeoutMs": 600000,
     "artifactsDir": "artifacts"
+  },
+
+  "notify": {
+    "enabled": true
   }
 }

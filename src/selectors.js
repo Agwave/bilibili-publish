@@ -74,6 +74,42 @@ const S = {
   coverTrigger: ['div.cover-module-main span.add-text', 'span.add-text'],
   coverDone: ['.bcc-dialog div.button.submit', '.bcc-dialog >> text=完成'],
 
+  // B站 新版封面编辑器把封面拆成 4:3（视频卡片）和 16:9（个人空间）两张。
+  // 我们只上传 4:3 那张，所以点「完成」时会弹一个同步确认框问要不要同步过去；
+  // **不处理它，编辑器就不会关**，遮罩留在页面上把后面的「立即投稿」挡死。
+  // 2026-10-09 的投稿失败就是它——而那时日志已经打了「封面已设置」，看着像成功。
+  // 实测形态：
+  //   <div class="videoup-confirm-modal bcc-dialog__wrap bcc-dialog__wrap-mask" data-reporter-id="132">
+  //     <div class="bcc-dialog" style="width: 432px; top: 30vh;">
+  //       <div class="bcc-dialog__header">检测到个人空间封面（16:9）未修改</div>
+  //       <div class="bcc-dialog__body"><div class="sync-confirm-content">…</div></div>
+  //       <div class="bcc-dialog__footer"><div class="modal-footer">
+  //         <button class="bcc-button button bcc-button--default large">不同步，手动编辑</button>
+  //         <button class="bcc-button button bcc-button--primary large">确认同步</button>
+  //       </div></div>
+  // 两个按钮靠 --default / --primary 区分：确认同步是 primary。
+  // 选「确认同步」是按用户的意思（2026-10-09 确认过）：让 16:9 个人空间封面
+  // 跟 4:3 一致，代价是会改动个人空间的封面图。
+  coverSyncModal: '.videoup-confirm-modal',
+  coverSyncConfirm: '.videoup-confirm-modal .bcc-button--primary',
+  coverSyncSkip: '.videoup-confirm-modal .bcc-button--default',
+
+  // 封面编辑器本身（实测 2026-10-09：它的遮罩类名以 cover-editor 开头）。
+  // 单独拎出来是因为「关掉同步框 != 关掉编辑器」——答完同步框，编辑器还开着，
+  // 得再点一次「完成」。实测三个中间态：只有 cover-editor、只有 syncModal、两个都在。
+  coverEditor: '.cover-editor',
+
+  // 弹窗遮罩的通用特征。任何 bcc-dialog 打开时都会有这层 wrap-mask。
+  // 单独拎出来是因为它是投稿流程里最阴的失败源：它不移除元素、不报错，
+  // 只是让后面每一次点击都变成 "intercepts pointer events" 然后超时——
+  // 报错信息指向被点的按钮，真正的原因在几十行之外。
+  mask: '[class*="bcc-dialog__wrap-mask"]',
+
+  // 浏览器通知权限引导框（「禁止 / 允许 / 知道了」）。同样是全屏遮罩。
+  // 实测 2026-10-09 它存在但 display:none，没挡路；留着兜底。
+  notifyDialog: '.videoup-notification-dialog',
+  notifyDialogDismiss: '.videoup-notification-dialog .bcc-button',
+
   // ---- 提交 ----
   submit: ['span.submit-add', 'text=立即投稿'],
   saveDraft: ['span.submit-draft'],
