@@ -14,8 +14,13 @@ node cli.js doctor
 **投稿页选择器失效**——那是页面改版导致的，语法检查永远发现不了。所以：
 
 > **改动涉及 `selectors.js` / `uploader.js` / `dom.js` / `browser.js` 时，收尾必须再跑一次
-> `node cli.js upload --date <最近日期> --dry-run`**，看它能不能一路填到「停在提交前」。
+> `node cli.js upload --date <没投过的日期> --dry-run`**（例如 `2026-09-30`），
+> 看它能不能一路填到「停在提交前」。
 > 这是本仓库唯一的真集成测试，等价于 game-wind 里的 `go test ./...`。
+
+**日期别填「最近日期」**——最近的日期基本都已经投稿了，而 `upload()` 对已投过的日期是
+硬拒绝的（`已经投过稿了（BV…）。要重投请先删掉 …publish.json`），照抄会当场报错。
+挑一个 `game-wind/data/videos/` 里有 mp4、但**没有 `<date>.publish.json`** 的日期。
 
 注意 `--dry-run` 会**真的上传一个视频**到创作中心（只是不提交），会留下草稿。
 
@@ -32,7 +37,9 @@ node cli.js doctor
 env -i HOME="$HOME" PATH=/usr/bin:/bin "$(ls -d $HOME/.nvm/versions/node/*/bin/node | sort -V | tail -1)" cli.js doctor
 
 # 全：连脚本逻辑一起验，走完整链路但不投稿
-env -i HOME="$HOME" PATH=/usr/bin:/bin bash -c 'DRY_RUN=1 DATE=<最近日期> ./scripts/cron_upload.sh'
+# 同样要挑**没投过的日期**：填最近日期的话，脚本会在幂等守卫处直接
+# 「已经有投稿记录，跳过」——正好是下面警告的那个「什么都没验」的分支
+env -i HOME="$HOME" PATH=/usr/bin:/bin bash -c 'DRY_RUN=1 DATE=2026-09-30 ./scripts/cron_upload.sh'
 ```
 
 **别只测「已投过跳过」那条分支**——它会在碰到系统调用之前就退出，等于什么都没验
@@ -128,10 +135,17 @@ ffmpeg 走 `ffmpeg-static`）。PATH 查找只在交互式终端下成立。
   实测中间态有三种：只开编辑器 / 只开同步框 / 两个都开。所以 `setCover` 是循环到
   `coverEditor` 消失为止，且 `ensureNoMask()` 在报成功之前必须过。
   **别再把「点了按钮」当成「事情办成了」**——这跟标签那次的谎报成功是同一类毛病。
-- **`getPage()` 只认领 `about:blank`**，所以投稿跑完不关标签的话，下次会再开一张。
+- **`getPage()` 只认领 `about:blank`**，所以投稿跑完不收尾的话，下次会再开一张。
   实测 2026-10-09 浏览器里堆了 10 个标签（历次运行各留一张）。这不只是占资源：
   排查时随手抓一个标签会读到**几天前的状态**，那次「页面显示投递成功、接口却查不到」
-  的误判就是这么来的。成功路径已在 `upload()` 里关页；失败路径留着现场（故意的）。
+  的误判就是这么来的。成功路径和 `--dry-run` 路径现在都走 `releasePage()` **归位成
+  `about:blank`**（不是关页），失败路径留着现场（故意的）。
+- **从 `getPage()` 拿的那张页，收尾别 `page.close()`，要用 `releasePage()`。** 关页有个
+  看不出来的副作用：它是**最后一张标签时浏览器会跟着退出**（实测 2026-10-09：清完历史标签后
+  跑一次 dry-run，Edge 进程归零、9222 只剩 502，下次运行得重新拉起）。归位则两头都要——页不堆
+  （下次直接复用这张空页），浏览器也常驻，`ensureBrowser()` 的「复用已在运行的实例」快路径才成立。
+  **例外**：`keepAlive()` 用 `context.newPage()` 自开自关的那张是私有页，用完即弃、不会攒，
+  直接 `page.close()` 就是对的，别为了「统一」把它也改成归位。
 - 元数据文案与视频内文案要一致，常量抄自 game-wind 的 `render.js`，改一处要两处一起改。
 
 ## 6. 定时任务
@@ -187,12 +201,14 @@ node -e "const{chromium}=require('playwright');(async()=>{const b=await chromium
 > （主站匿名也能开，实测无 cookie 访问返回 200、不跳登录页）。
 >
 > 2026-10-09 重写为**等响应**：挂监听 → 等 `cookie/info` → 若 `refresh=true` 再等
-> `cookie/refresh` 与 `confirm/refresh`，每一步都落日志。这样「没触发」「没到窗口」「链路断了」
-> 是三种不同的日志行，不再一律静默。
+> `cookie/refresh` 与 `confirm/refresh`，每一步都落日志。这样「没触发」「没到窗口」
+> 「拿到了但响应体读不出来」「链路断了」是四种不同的日志行，不再一律静默。
+> （四种日志行逐条列在 README 的「登录态」一节。）
 >
 > **但新版同样还没实测成功过**——它只是把失败从静默变成可见。判断标准仍然是日志里
-> `登录态: ...` 那行的到期时间有没有往后跳 7 天。若始终不跳，说明 B站 这条续期路径
-> 就不吃「无人值守开一次主站」这套，退回每周人工扫码。
+> `登录态: ...` 那行的到期时间有没有往后跳，**跳多少天不一定**（实测两次扫码分别拿到
+> 7 天和 180 天，见上表）。若始终不跳，说明 B站 这条续期路径就不吃「无人值守开一次主站」
+> 这套，退回人工扫码。
 
 注意这个预检**只覆盖真正走投稿流程的日子**——如果某天因为"已投过"被跳过，
 脚本在到达预检之前就退出了，那天不会有提醒。
@@ -209,12 +225,19 @@ node -e "const{chromium}=require('playwright');(async()=>{const b=await chromium
 | 投稿失败，且原因是登录失效 | `session-lost` | `cli.js` |
 | 投稿失败，其它原因 | `upload-failed` | `cli.js` |
 
-- **webhook 不在本仓库配**，复用 game-wind 的 `config.local.yaml`（`notify.webhook_url`，
-  覆盖 `config.yaml`），免得同一个密钥两边各存一份。逐行正则提取，没引 YAML 库。
-  临时改目标可用环境变量 `GAMEWIND_WEBHOOK`。
+- **webhook 由本仓库自己持有**：`config.local.json` 的 `notify.webhookUrl`（该文件在
+  .gitignore 里，入库的 `config.json` 只留一个空模板）。**不要再去读 game-wind 的配置**——
+  Agent 最初那版是拿正则从 game-wind 的 `config.local.yaml` 里刮 `webhook_url` 的，
+  2026-10-09 拆掉了：那是拿别人的密钥凑自己的功能、把「告警去哪儿」的决定权交给了对方仓库；
+  而且 YAML 写法一变就刮不到，只能静默跳过告警——兜底自己断了却不出声。
+  临时改目标可用环境变量 `NOTIFY_WEBHOOK`（优先级最高）。
+- **推送是可选的**：`webhookUrl` 没配（或 `notify.enabled` 设 `false`）就是不推，
+  投稿流程照常跑，**不报错、不算自检问题**——退出码要留给真正让稿件投不出去的东西。
+  所以 `doctor` 第 5 段只**如实报状态**（推到哪个机器人 / 没配 / 已关掉），
+  不把「没配」判成 bad。这段检查别删：告警链路是全流程唯一一处「断了也不影响主流程」
+  的东西，不写出来就没人知道它到底开没开。
 - 去重：状态存 `logs/notify-state.json`，**同一天同一种只推一次**（cron 一天一跑不会重复，
   但调选择器时手动重跑很频繁）。
-- 开关：`config.json` 的 `notify.enabled`，设 `false` 则整块告警静默。
 - 推送本身**永远不抛异常**：告警是兜底，兜底失败不能把投稿流程带塌。
 
 **已知缺口**：`cron_upload.sh` 里「等不到当天的 mp4，放弃本次投稿」那条分支（game-wind
